@@ -1,0 +1,11 @@
+name: KaizenCalidad
+title: KaizenCalidad
+account: perugia
+server: shinyapps.io
+appId: 169325
+bundleId: 775450
+url: https://perugia.shinyapps.io/KaizenCalidad/
+when: 1491254337.85525
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: KaizenCalidad.Rmd|pares.csv|REPROCESOS_Detalle.csv

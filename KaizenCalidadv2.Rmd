@@ -1,0 +1,663 @@
+---
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Generar reporte semanal de calidad y produccion
+```{r lectura, echo=FALSE, message=FALSE, warning=FALSE}
+require(dplyr)
+require(lubridate)
+require(ggplot2)
+require(stringr)
+require(gridExtra)
+
+inputPanel(
+     fileInput("browse.reprocesos", "Selecciona archivo CSV que obtienes de indicadores/reprocesos",
+                                                          accept = c(
+                                                               "text/csv",
+                                                               "text/comma-separated-values,text/plain",
+                                                               ".csv")),
+     
+     fileInput("browse.lotes", "Selecciona archivo CSV que obtienes de indicadores/produccion/pares",
+                                                          accept = c(
+                                                               "text/csv",
+                                                               "text/comma-separated-values,text/plain",
+                                                               ".csv")),
+     uiOutput("departamentos"),
+     uiOutput("semanas")
+ )
+
+     
+     #llenar combo de departamentos con el archivo preparado
+     output$departamentos  <- renderUI({
+          
+          datos <- leer.reprocesos()
+          if (is.null(datos)) return(NULL)
+          
+          deptos <- unique(datos$SUBDEPTO)
+          selectInput("depto.selected", "Selecciona departamento", as.list(deptos), multiple = F)
+     })
+     
+     #llenar combo de semanas
+     output$semanas  <- renderUI({
+          datos <- leer.reprocesos()
+          if (is.null(datos)) return(NULL)
+          sems <- unique(datos$SEMANA)
+          selectInput("sems.selected", "Selecciona semana", as.list(sems), 
+                      selected = max(datos$SEMANA,1), multiple = F)
+     })
+     
+     #funcion para semanas de jueves a miercoles
+     dia.semana <- function(fecha){
+          #if(!is.Date(fecha)) return("Fecha sin formato correcto")
+          num <- as.numeric(format(as.Date(fecha)+3, "%U"))
+          num <- ifelse(num<10, paste0("0",num), num)
+          
+          return(paste0(year(fecha),"-S",num))
+     }
+     
+     #leer archivo de reprocesos, semanas completas
+     leer.reprocesos <- reactive({
+          
+          file.reprocesos <- NULL
+          file.reprocesos <- input$browse.reprocesos          
+          
+          if (is.null(file.reprocesos)) return(NULL)
+          repro <- file.reprocesos$datapath
+          #repro <- "REPROCESOS_Detalle.csv"
+          
+          #leer por tipo de archivo
+          reprocesos.raw <- read.csv(repro, 
+                                     header = TRUE, na.strings = c("NA",""), stringsAsFactors = F)
+          #pisos a ensamble
+          if(nrow(reprocesos.raw[reprocesos.raw$depto_b == "PISOS",])>0){
+               reprocesos.raw[reprocesos.raw$depto_b == "PISOS",]$depto_b <- "ENSAMBLE"
+          }
+          
+          #corregir reprocesos
+          reprocesos.raw$fecha <- dmy_hms(reprocesos.raw$fecha)
+          reprocesos.raw$FECHA<- floor_date(reprocesos.raw$fecha, unit = "day")
+
+          reprocesos <- reprocesos.raw%>%
+               mutate("SEMANA" = dia.semana(FECHA))%>%
+               select(FECHA, "DEFECTO" = descr, "DEPARTAMENTO" = depto_b, "SUBDEPTO" = subdepto, SEMANA)
+          
+     })
+     
+     #leer archivo de estilos producidos en la semana
+     leer.estilos <- reactive({
+          file.pares <- NULL
+          file.pares <- input$browse.lotes         
+          
+          if (is.null(file.pares)) return(NULL)
+          pares <- file.pares$datapath
+          #pares <- "pares.csv"
+          
+          #leer por tipo de archivo
+          pares.raw <- read.csv(pares, 
+                                header = TRUE, na.strings = c("NA",""), stringsAsFactors = F)
+          
+          #corregir pares leidos
+          pares.raw$fproceso <- dmy(pares.raw$fproceso)
+          
+          #pisos a ensamble
+          if(nrow(pares.raw[pares.raw$subdepto == "PISOS",])>0){
+               pares.raw[pares.raw$subdepto == "PISOS",]$subdepto <- "ENSAMBLE"
+          }
+          
+          pares <<- pares.raw%>%
+               mutate("SEMANA" = dia.semana(fproceso),
+                      "SUBDEPTO" = paste0(subdepto, qfabrica))%>%
+               select("ESTILO" = vcestil, "FECHA" = fproceso, SUBDEPTO, "DEPARTAMENTO" = subdepto, 
+                      "PARES" = pares, "META" = meta, SEMANA)
+          
+     })
+
+```
+
+<center><h4>Datos encontrados para generar reporte</h4></center>
+Departamentos encontrados en reprocesos
+```{r repro-deptos, echo=FALSE}
+
+renderTable({
+
+     datos <- leer.reprocesos()
+     if (is.null(datos)) return(NULL)
+
+     data.frame("Departamentos" = unique(datos$DEPARTAMENTO))
+
+})
+
+```
+
+```{r repro-deptos-error, echo=FALSE}
+
+renderPrint({
+
+     datos <- leer.reprocesos()
+     if (is.null(datos)) return(NULL)
+
+     if(nrow(datos%>%filter(DEPARTAMENTO == "MONTADO"))==0) {
+          return(cat("NO SE ENCONTRO DEPARTAMENTO DE MONTADO EN REPROCESOS, ALGUNAS GRAFICAS NO SERAN
+                     GENERADAS O PUEDEN CONTENER INFORMACION ERRONEA"))
+     }
+})
+
+```
+Departamentos encontrados en pares producidos
+```{r pares-deptos, echo=FALSE}
+
+renderTable({
+
+     datos <- leer.estilos()
+     if (is.null(datos)) return(NULL)
+
+     data.frame("Departamentos" = unique(datos$DEPARTAMENTO))
+
+})
+
+```
+
+```{r pares-deptos-error, echo=FALSE}
+
+renderPrint({
+
+     datos <- leer.estilos()
+     if (is.null(datos)) return(NULL)
+
+     if(nrow(datos%>%filter(DEPARTAMENTO == "MONTADO"))==0) {
+          return(cat("NO SE ENCONTRO DEPARTAMENTO DE MONTADO EN PARES PRODUCIDOS, ALGUNAS GRAFICAS NO SERAN GENERADAS"))
+     }
+})
+
+```
+
+<P style="page-break-before: always">
+
+<style>
+  .col2 {
+    columns: 2 200px;         /* number of columns and width in pixels*/
+    -webkit-columns: 2 200px; /* chrome, safari */
+    -moz-columns: 2 200px;    /* firefox */
+  }
+  .col3 {
+    columns: 3 100px;
+    -webkit-columns: 3 100px;
+    -moz-columns: 3 100px;
+  }
+</style>
+<P style="page-break-before: always">
+
+##Metodo de solucion de problemas y reprocesos
+Nombre de quien realiza: __________________________________________    Fecha: __________________   
+  
+  Utiliza el diagrama de pescado para determinar las posibles causas de tus principales reprocesos, el diagrama de 5 porque para encontrar la causa raiz y define las actividades a realizar para mejorar
+Elige la causa principal de tus reprocesos y llega a su causa raiz
+!["Herramientas de mejora"](data/all.png)
+<P style="page-break-before: always">
+<center><h2>Indicadores de pares buenos a la primera</h2></center>
+```{r historico-general-repro, echo=FALSE}
+
+renderPlot({
+                    
+     #grafico de reprocesos segun el subdepto
+     datos <- leer.reprocesos()
+     if (is.null(datos)) return(NULL)
+     pares <- leer.estilos()
+     if (is.null(pares)) return(NULL)
+
+     reprocesos.por.semana <- datos%>%
+          group_by(SEMANA)%>%
+          summarise("REPROCESOS" = n())
+
+     produccion.por.semana <- pares%>%
+          group_by(SEMANA, DEPARTAMENTO)%>%
+          summarise("PARES" = sum(PARES))%>%
+          filter(DEPARTAMENTO == "MONTADO")%>%
+          select(SEMANA, PARES)
+     
+     if(nrow(produccion.por.semana)==0) return("No se encontro informacion de montado")
+
+     result <- merge(reprocesos.por.semana, produccion.por.semana, by = c("SEMANA"), all = T)%>%
+          mutate("PARES.SIN.REPROCESO" = ceiling((1-(REPROCESOS/PARES))*100))%>%
+          select(SEMANA, PARES.SIN.REPROCESO)
+
+     result <- result[complete.cases(result),]
+
+     #reprocesos
+     p1 <- ggplot(result) +
+          geom_hline(yintercept = 98, col = "green4") +
+          geom_hline(yintercept = 95, col = "gold3") +
+          geom_line(aes(SEMANA, PARES.SIN.REPROCESO, group = '1'), col = "blue")+
+          geom_text(aes(SEMANA, PARES.SIN.REPROCESO,
+                        label = paste(PARES.SIN.REPROCESO,"%")), vjust = 2) +
+          ggtitle("Indicador general de pares buenos a la primera")+
+          scale_y_continuous(limits = c(min(result$PARES.SIN.REPROCESO)-10, 100))
+
+
+     reprocesos.por.semana <- datos%>%
+          group_by(SEMANA, DEPARTAMENTO)%>%
+          summarise("REPROCESOS" = n())
+
+     produccion.por.semana <- pares%>%
+          group_by(SEMANA, DEPARTAMENTO)%>%
+          summarise("PARES" = sum(PARES),
+                    "META" = sum(META))
+
+     result <- merge(reprocesos.por.semana, produccion.por.semana, by = c("SEMANA","DEPARTAMENTO"), all = T)%>%
+          mutate("PARES.SIN.REPROCESO" = ceiling((1-(REPROCESOS/PARES))*100),
+                 "CUMPLIMIENTO" = ceiling(PARES/META*100))%>%
+          select(SEMANA, DEPARTAMENTO, PARES.SIN.REPROCESO)
+
+     result <- result[complete.cases(result),]
+
+     #reprocesos
+     p2 <- ggplot(result) +
+          geom_hline(yintercept = 98, col = "green4")+
+          geom_hline(yintercept = 95, col = "gold3") +
+          geom_line(aes(SEMANA, PARES.SIN.REPROCESO, colour = DEPARTAMENTO, group = DEPARTAMENTO))+
+          geom_text(aes(SEMANA, PARES.SIN.REPROCESO, colour = DEPARTAMENTO, group = DEPARTAMENTO,
+                        label = paste(PARES.SIN.REPROCESO,"%")), vjust = 2) +
+          ggtitle("Pares buenos a la primera por departamento") +
+          scale_y_continuous(limits = c(min(result$PARES.SIN.REPROCESO)-10, 100))
+
+     grid.arrange(p1,p2, ncol = 2)
+
+})
+
+```
+
+<center><h4>Cumplimiento de metas de produccion</h4></center>
+```{r historico-deptos-metas, echo=FALSE, fig.height=15}
+
+renderPlot({
+                    
+     #grafico de reprocesos segun el subdepto
+     pares <- leer.estilos()
+     if (is.null(pares)) return(NULL)
+
+     
+     result <- pares%>%
+          group_by(FECHA, SEMANA, SUBDEPTO, DEPARTAMENTO)%>%
+          summarise("PARES.DIA" = sum(PARES), 
+                    "META.DIA" = mean(META))%>%
+          group_by(SEMANA, DEPARTAMENTO)%>%
+          summarise("PARES.SEMANA" = sum(PARES.DIA),
+                    "META.SEMANA" = sum(META.DIA))%>%
+          mutate("CUMPLIMIENTO" = ceiling(PARES.SEMANA/META.SEMANA*100))
+
+     result <- result[complete.cases(result),]
+     
+     #metas
+     ggplot(result) +
+          geom_hline(yintercept = 98, col = "green4")+
+          geom_hline(yintercept = 95, col = "gold3") +
+          geom_line(aes(SEMANA, CUMPLIMIENTO, colour = DEPARTAMENTO, group = DEPARTAMENTO))+
+          facet_grid(DEPARTAMENTO~., scales = "free") +
+          geom_text(aes(SEMANA, CUMPLIMIENTO, colour = DEPARTAMENTO, group = DEPARTAMENTO,
+                        label = paste(CUMPLIMIENTO,"%")), vjust = 0) +
+          theme(legend.position="none")
+       
+}, height = 600)
+
+```
+<P style="page-break-before: always">
+<center> <h2>Reporte semanal de calidad y produccion</h2> </center>
+
+<center> <h3>Semana:  `r renderText({ input$sems.selected })` - Departamento: `r renderText({ input$depto.selected })` </h3> </center>   
+
+<center>
+###Cumplimiento de meta semanal **`r renderText({
+                    
+                    pares <- leer.estilos()
+                    if (is.null(pares)) return(NULL)
+                    
+                    semana.sel <- input$sems.selected
+                    if(is.null(semana.sel)) return(NULL)
+                    
+                    depto.sel <- input$depto.selected
+                    if (is.null(depto.sel)) return(NULL)
+                    
+                    meta.total <- pares%>%
+                         group_by(SUBDEPTO, FECHA)%>%
+                         summarise("META.SEMANA" = sum(PARES))
+                    
+                    prod.pares <- pares%>%
+                         filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+                         group_by(FECHA)%>%
+                         summarise("PARES"  = sum(PARES),
+                                   "META" = mean(META))%>%
+                         ungroup()%>%
+                         summarise("TOT.PARES" = sum(PARES),
+                                   "TOT.META" = sum(META))%>%
+                         mutate("cumple" = TOT.PARES/TOT.META)
+                    
+                    cumplimiento <- paste0(as.numeric(ceiling(prod.pares$cumple*100)),"%")
+                    
+                    })`** {#foo}  
+                    
+###Pares buenos a la primera  **`r renderText({
+                    reprocesos <- leer.reprocesos()
+                    if (is.null(reprocesos)) return(NULL)
+                    pares <- leer.estilos()
+                    if (is.null(pares)) return(NULL)
+                    
+                    semana.sel <- input$sems.selected
+                    if(is.null(semana.sel)) return(NULL)
+                    
+                    depto.sel <- input$depto.selected
+                    if (is.null(depto.sel)) return(NULL)
+                    
+                    total.reprocesos <- reprocesos%>%
+                         filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+                         summarise("TOTAL" = n())
+                    
+                    total.pares <- pares%>%
+                         filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+                         summarise("PARES"  = sum(PARES))
+                    
+                    a.primera <- paste0(as.numeric(ceiling((1-(total.reprocesos/total.pares))*100)),"%")
+                    
+                    return(a.primera)
+               })`**  {#foo}  
+
+</center>
+```{r reprocesos-acumulado, echo=FALSE}
+
+renderPlot({
+     
+     #grafico de reprocesos segun el subdepto
+     datos <- leer.reprocesos()
+     if (is.null(datos)) return(NULL)
+     pares <- leer.estilos()
+     if (is.null(pares)) return(NULL)
+     semana.sel <- input$sems.selected
+     if(is.null(semana.sel)) return(NULL)
+     depto.sel <- input$depto.selected
+     if (is.null(depto.sel)) return(NULL)
+     
+     result <- datos%>%
+          filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+          group_by(DEFECTO)%>%
+          summarise("TOTAL" = n())%>%
+          arrange(desc(TOTAL))%>%
+          mutate("acum"= cumsum(TOTAL),
+                 "PCT.ACUM" = ceiling(acum/max(acum)*100))%>%
+          select(DEFECTO, TOTAL, PCT.ACUM)
+     
+     #formato al nombre del defecto
+     result$DEFECTO <- str_wrap(result$DEFECTO, width = 10) 
+     
+     if (nrow(result) ==0) return(NULL)
+     
+     p1 <- ggplot(result) +
+          geom_bar(aes(reorder(DEFECTO, -TOTAL), TOTAL), fill = 'steelblue3', stat = 'identity') +
+          geom_line(aes(reorder(DEFECTO, -TOTAL), PCT.ACUM, group = '1'), colour = 'deeppink4') +
+          xlab("Defectos") +
+          ylab("Cuenta") +
+          geom_text(aes(reorder(DEFECTO, -TOTAL), PCT.ACUM,
+                        label = paste(PCT.ACUM,"%"), group = '1'), vjust = 2) +
+          geom_text(aes(reorder(DEFECTO, -TOTAL), TOTAL,
+                        label = paste(TOTAL), group = '1'), vjust = 0) +
+          geom_point(aes(reorder(DEFECTO, -TOTAL), PCT.ACUM, group = '1'), colour = 'deeppink4') +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) +
+          ggtitle("Acumulado semanal de defectos")
+     
+     #historico de buenos a la primera
+      reprocesos.por.semana <- datos%>%
+          filter(SUBDEPTO %in% depto.sel)%>%
+          group_by(SEMANA)%>%
+          summarise("REPROCESOS" = n())
+
+     produccion.por.semana <- pares%>%
+          filter(SUBDEPTO %in% depto.sel)%>%
+          group_by(SEMANA)%>%
+          summarise("PARES" = sum(PARES))
+     
+     result <- merge(reprocesos.por.semana, produccion.por.semana, by = "SEMANA", all = T)%>%
+          mutate("PARES.SIN.REPROCESO" = ceiling((1-(REPROCESOS/PARES))*100))%>%
+          select(SEMANA, PARES.SIN.REPROCESO)
+     
+     result <- result[complete.cases(result),]
+     
+     #historico de reprocesos
+     p2 <- ggplot(result) +
+                    geom_hline(yintercept = 98, col = "green4")+
+          geom_hline(yintercept = 95, col = "gold3") +
+          geom_line(aes(SEMANA, PARES.SIN.REPROCESO, group = '1')) +
+          geom_text(aes(SEMANA, PARES.SIN.REPROCESO, group = '1',
+                        label = paste(PARES.SIN.REPROCESO,"%")), vjust = 2) +
+          ggtitle("Historial de pares buenos a la primera") + 
+          scale_y_continuous(limits = c(min(result$PARES.SIN.REPROCESO)-10, 100))
+          
+     grid.arrange(p1,p2, ncol = 2)
+     
+})
+
+```
+
+```{r reprocesos-por.dia, echo=FALSE}
+
+renderPlot({
+                    
+     #grafico de reprocesos segun el subdepto
+     datos <- leer.reprocesos()
+     if (is.null(datos)) return(NULL)
+     semana.sel <- input$sems.selected
+     if(is.null(semana.sel)) return(NULL)
+     depto.sel <- input$depto.selected
+     if (is.null(depto.sel)) return(NULL)
+     
+     datos$DIA <- weekdays(datos$FECHA)
+     result <- datos%>%
+          filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+          group_by(FECHA, DIA, DEFECTO)%>%
+          summarise("TOTAL" = n())%>%
+          arrange(FECHA)%>%
+          select(FECHA, DIA, DEFECTO, TOTAL)
+     
+     #formato al nombre del defecto
+     result$DEFECTO <- str_wrap(result$DEFECTO, width = 10)
+     
+     if (nrow(result) ==0) return(NULL)
+     
+     ggplot(result) +
+          geom_bar(aes(DEFECTO, TOTAL), fill = 'steelblue1', stat = 'identity') + 
+          xlab("Defectos") + 
+          ylab("Cuenta") +
+          geom_text(aes(DEFECTO, TOTAL,
+                        label = paste(TOTAL), group = '1'), vjust = 0.5) +
+          facet_grid(FECHA~.)+
+          theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+          ggtitle("Tabla de defectos diarios")
+     
+}, height = 500)
+
+```
+
+
+<P style="page-break-before: always">
+<center> <h2>Kaizen semanal de calidad</h2> </center>
+<center> <h3>Semana:  `r renderText({ input$sems.selected })` - Departamento: `r renderText({ input$depto.selected })` </h3> </center>
+```{r kaizen-reprocesos-pares, echo=FALSE}
+
+renderPlot({
+     
+     #grafico de reprocesos segun el subdepto
+     datos <- leer.reprocesos()
+     if (is.null(datos)) return(NULL)
+     pares <- leer.estilos()
+     if (is.null(pares)) return(NULL)
+     semana.sel <- input$sems.selected
+     if(is.null(semana.sel)) return(NULL)
+     depto.sel <- input$depto.selected
+     if (is.null(depto.sel)) return(NULL) 
+     
+     #historico de buenos a la primera
+      reprocesos.por.semana <- datos%>%
+          filter(SUBDEPTO %in% depto.sel)%>%
+          group_by(SEMANA)%>%
+          summarise("REPROCESOS" = n())
+
+     produccion.por.semana <- pares%>%
+          filter(SUBDEPTO %in% depto.sel)%>%
+          group_by(SEMANA)%>%
+          summarise("PARES" = sum(PARES))
+     
+     result <- merge(reprocesos.por.semana, produccion.por.semana, by = "SEMANA", all = T)%>%
+          mutate("PARES.SIN.REPROCESO" = ceiling((1-(REPROCESOS/PARES))*100))%>%
+          select(SEMANA, PARES.SIN.REPROCESO)
+     
+     result <- result[complete.cases(result),]
+     
+     #historico de reprocesos
+     p1 <- ggplot(result) +
+          geom_hline(yintercept = 98, col = "green4")+
+          geom_hline(yintercept = 95, col = "gold3") +
+          geom_line(aes(SEMANA, PARES.SIN.REPROCESO, group = '1'), col = "blue") +
+          geom_text(aes(SEMANA, PARES.SIN.REPROCESO, group = '1',
+                        label = paste(PARES.SIN.REPROCESO,"%")), vjust = 2) +
+          ggtitle("Pares buenos a la primera") + 
+          scale_y_continuous(limits = c(min(result$PARES.SIN.REPROCESO)-10, 100))
+     
+     
+     
+     #historico de cumplimiento de metas
+     meta.total <- pares%>%
+                         group_by(SUBDEPTO, FECHA)%>%
+                         summarise("META.SEMANA" = sum(PARES))
+                    
+     prod.pares <- pares%>%
+          filter(SUBDEPTO %in% depto.sel)%>%
+          group_by(FECHA,SEMANA)%>%
+          summarise("PARES"  = sum(PARES),
+                    "META" = mean(META))%>%
+          ungroup()%>%
+          group_by(SEMANA)%>%
+          summarise("TOT.PARES" = sum(PARES),
+                    "TOT.META" = sum(META))%>%
+          mutate("CUMPLIMIENTO.META" = ceiling(TOT.PARES/TOT.META*100))
+                    
+     p2 <- ggplot(prod.pares) + 
+          geom_hline(yintercept = 100, col = "green4") +
+          geom_hline(yintercept = 95, col = "gold3") +
+          geom_line(aes(SEMANA, CUMPLIMIENTO.META, group = '1'), col = "blue") +
+          geom_text(aes(SEMANA, CUMPLIMIENTO.META, group = '1',
+                        label = paste(CUMPLIMIENTO.META,"%")), vjust = 2) +
+          ggtitle("Cumplimiento de metas") + 
+          scale_y_continuous(limits = c(min(prod.pares$CUMPLIMIENTO.META)-10,
+                                        max(prod.pares$CUMPLIMIENTO.META)+10))          
+     
+     grid.arrange(p1, p2, ncol = 2)
+
+}, height = 200)
+     
+```
+```{r kaizen-reprocesos-acumulado, echo=FALSE, fig.height=4}
+
+renderPlot({
+
+     #grafico de reprocesos segun el subdepto
+     datos <- leer.reprocesos()
+     if (is.null(datos)) return(NULL)
+     pares <- leer.estilos()
+     if (is.null(pares)) return(NULL)
+     semana.sel <- input$sems.selected
+     if(is.null(semana.sel)) return(NULL)
+     depto.sel <- input$depto.selected
+     if (is.null(depto.sel)) return(NULL)
+     
+     result <- datos%>%
+          filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+          group_by(DEFECTO)%>%
+          summarise("TOTAL" = n())%>%
+          arrange(desc(TOTAL))%>%
+          mutate("acum"= cumsum(TOTAL),
+                 "PCT.ACUM" = ceiling(acum/max(acum)*100))%>%
+          select(DEFECTO, TOTAL, PCT.ACUM)
+     
+     #formato al nombre del defecto
+     result$DEFECTO <- str_wrap(result$DEFECTO, width = 10) 
+     
+     if (nrow(result) ==0) return(NULL)
+     
+     p1 <- ggplot(result) +
+          geom_bar(aes(reorder(DEFECTO, -TOTAL), TOTAL), fill = 'steelblue3', stat = 'identity') +
+          geom_line(aes(reorder(DEFECTO, -TOTAL), PCT.ACUM, group = '1'), colour = 'deeppink4') +
+          xlab("Defectos") +
+          ylab("Cuenta") +
+          geom_text(aes(reorder(DEFECTO, -TOTAL), PCT.ACUM,
+                        label = paste(PCT.ACUM,"%"), group = '1'), vjust = 2) +
+          geom_text(aes(reorder(DEFECTO, -TOTAL), TOTAL,
+                        label = paste(TOTAL), group = '1'), vjust = 0) +
+          geom_point(aes(reorder(DEFECTO, -TOTAL), PCT.ACUM, group = '1'), colour = 'deeppink4') +
+          theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8)) +
+          ggtitle("Acumulado semanal de defectos")
+     
+     #reprocesos leidos por dia
+     datos$DIA <- weekdays(datos$FECHA)
+     result <- datos%>%
+          filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+          group_by(FECHA, DIA, DEFECTO)%>%
+          summarise("TOTAL" = n())%>%
+          arrange(FECHA)%>%
+          select(FECHA, DIA, DEFECTO, TOTAL)
+     
+     #formato al nombre del defecto
+     result$DEFECTO <- str_wrap(result$DEFECTO, width = 10)
+     
+     if (nrow(result) ==0) return(NULL)
+     
+     p2<- ggplot(result) +
+          geom_bar(aes(DEFECTO, TOTAL), fill = 'steelblue1', stat = 'identity') + 
+          xlab("Defectos") + 
+          ylab("Cuenta") +
+          geom_text(aes(DEFECTO, TOTAL,
+                        label = paste(TOTAL), group = '1'), vjust = 0.5) +
+          facet_grid(FECHA~.)+
+          theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8)) + 
+          ggtitle("Defectos por dia")
+     
+          
+     grid.arrange(p1,p2, ncol = 2)
+})
+     
+```
+```{r kaizen-estilos-produccion, echo=FALSE, message=FALSE, warning=FALSE}
+
+require(tidyr)
+
+renderPlot({
+     pares <- leer.estilos()
+     if (is.null(pares)) return(NULL)
+     depto.sel <- input$depto.selected
+     if (is.null(depto.sel)) return(NULL) 
+     semana.sel <- input$sems.selected
+     if(is.null(semana.sel)) return(NULL)
+     
+     #historico de cumplimiento de metas
+     meta.total <- pares%>%
+                         group_by(SUBDEPTO, FECHA)%>%
+                         summarise("META.SEMANA" = sum(PARES))
+                    
+     prod.pares <- pares%>%
+          filter(SUBDEPTO %in% depto.sel & SEMANA %in% semana.sel)%>%
+          group_by(FECHA, ESTILO)%>%
+          summarise("PARES"= sum(PARES))
+     
+     ggplot(prod.pares) + 
+          geom_point(aes(factor(ESTILO), PARES), size = 2) + 
+          geom_text(aes(factor(ESTILO), PARES, group = '1',
+                        label = paste(PARES)), vjust = -0.5) +
+          facet_grid(FECHA~.) +
+          ggtitle("Estilos producidos en la semana") + 
+          xlab("Estilos")+
+          scale_y_continuous(limits = c(0, max(prod.pares$PARES)+100))
+}, height = 400)
+
+```
+<P style="page-break-before: always">
